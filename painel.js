@@ -390,6 +390,20 @@ function criarElemento(tag, classe, texto) {
     return elemento;
 }
 
+function escaparHTML(valor) {
+    return String(valor).replace(/[&<>"']/g, caractere => {
+        const caracteres = {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#039;"
+        };
+
+        return caracteres[caractere];
+    });
+}
+
 
 function formatarPreco(preco) {
     return Number(preco || 0).toLocaleString("pt-BR", {
@@ -1138,71 +1152,34 @@ onAuthStateChanged(auth, async usuario => {
     }
 
     try {
-        let clienteId;
+        const clienteId = await descobrirCliente();
 
-        try {
-            clienteId = await descobrirCliente();
-
-        } catch (erro) {
-            console.warn(
-                "Não foi possível descobrir o cliente vinculado:",
-                erro.message
-            );
-
-            clienteId = CONFIG.id;
-        }
-
-        console.log(
-            "CLIENTE IDENTIFICADO:",
-            clienteId
-        );
+        console.log("CLIENTE IDENTIFICADO:", clienteId);
 
         CAMINHO_BARBEIRO = `barbeiros/${clienteId}`;
 
-        console.log(
-            "CAMINHO DO CLIENTE:",
-            CAMINHO_BARBEIRO
-        );
+        console.log("CAMINHO DO CLIENTE:", CAMINHO_BARBEIRO);
 
         await carregarConfiguracaoCliente();
-
         aplicarConfiguracaoCliente();
-
         await carregarServicos();
-
         await prepararNotificacoes();
 
-        console.log(
-            "AUTH OK — preparando painel e notificações"
-        );
-
-        console.log(
-            "TESTE NOTIFICAÇÃO:",
-            Notification.permission
-        );
-
-        console.log(
-            "notificacoesAtivas:",
-            notificacoesAtivas
-        );
+        console.log("AUTH OK — preparando painel e notificações");
+        console.log("TESTE NOTIFICAÇÃO:", Notification.permission);
+        console.log("notificacoesAtivas:", notificacoesAtivas);
 
         await limparHorariosPassados();
-
         await carregarAgendamentos();
-
         await carregarHorarios();
 
         monitorarNovosAgendamentos();
 
     } catch (erro) {
-        console.error(
-            "Erro ao identificar cliente:",
-            erro
-        );
+        console.error("Erro ao identificar cliente:", erro);
 
         if (mensagem) {
-            mensagem.textContent =
-                "Erro ao identificar o cliente.";
+            mensagem.textContent = "Erro ao identificar cliente.";
         }
     }
 });
@@ -1515,22 +1492,22 @@ async function carregarAgendamentos() {
 
             card.innerHTML = `
                 <div class="horario">
-                    ${horario}
+                    ${escaparHTML(horario)}
                 </div>
 
                 <div class="cliente">
-                    ${nome}
+                   ${escaparHTML(nome)}
                 </div>
 
                 <div class="detalhes-agendamento">
                     <div>
                         <span>Serviço</span>
-                        <strong>${servico}</strong>
+                        <strong>${escaparHTML(servico)}</strong>
                     </div>
 
                     <div>
                         <span>WhatsApp</span>
-                        <strong>${telefoneOriginal || "Não informado"}</strong>
+                        <strong>${escaparHTML(telefoneOriginal) || "Não informado"}</strong>
                     </div>
                 </div>
 
@@ -1842,7 +1819,7 @@ async function carregarHorarios() {
             card.className = "horario-card";
 
             card.innerHTML = `
-                <strong>${horario}</strong>
+    <strong>${escaparHTML(horarioString)}</strong>  
 
                 <span class="${
                     disponivel ? "disponivel" : "ocupado"
@@ -2194,45 +2171,81 @@ async function concluirAgendamento(id) {
 // =========================================================
 // CANCELAR AGENDAMENTO
 // =========================================================
-
-
+    
 async function cancelarAgendamento(id, data, horario, agendamento) {
+    if (!CAMINHO_BARBEIRO) return;
 
     const confirmar = await confirmarCancelamento(agendamento);
 
     if (!confirmar) return;
 
     try {
+        const horarioRef = ref(
+            db,
+            `${CAMINHO_BARBEIRO}/horarios/${data}/${horario}`
+        );
 
-        // Atualiza o agendamento e libera o horário
-        // em uma única operação no Firebase.
+        // Confere a quem pertence atualmente o horário.
+        const snapshotHorario = await get(horarioRef);
 
-        await update(ref(db), {
+        const dadosHorario = snapshotHorario.exists()
+            ? snapshotHorario.val()
+            : null;
 
-            [`${CAMINHO_BARBEIRO}/agendamentos/${id}/status`]: "cancelado",
+        // O status sempre será atualizado.
+        const atualizacoes = {
+            [`${CAMINHO_BARBEIRO}/agendamentos/${id}/status`]:
+                "cancelado"
+        };
 
-            [`${CAMINHO_BARBEIRO}/horarios/${data}/${horario}/disponivel`]: true,
+        // Só libera o horário se ele pertencer a este agendamento.
+        if (
+            dadosHorario &&
+            dadosHorario.agendamentoId === id
+        ) {
+            atualizacoes[
+                `${CAMINHO_BARBEIRO}/horarios/${data}/${horario}/disponivel`
+            ] = true;
 
-            [`${CAMINHO_BARBEIRO}/horarios/${data}/${horario}/reservadoPor`]: null,
+            atualizacoes[
+                `${CAMINHO_BARBEIRO}/horarios/${data}/${horario}/reservadoPor`
+            ] = null;
 
-            [`${CAMINHO_BARBEIRO}/horarios/${data}/${horario}/agendamentoId`]: null
+            atualizacoes[
+                `${CAMINHO_BARBEIRO}/horarios/${data}/${horario}/agendamentoId`
+            ] = null;
 
-        });
+        } else {
+            console.warn(
+                "O horário não pertence mais a este agendamento. Não será liberado.",
+                { id, data, horario, dadosHorario }
+            );
+        }
+
+        // Atualiza tudo em uma única operação.
+        await update(ref(db), atualizacoes);
 
         console.log("AGENDAMENTO CANCELADO:", id);
-        console.log("HORÁRIO LIBERADO:", data, horario);
+
+        if (
+            dadosHorario &&
+            dadosHorario.agendamentoId === id
+        ) {
+            console.log("HORÁRIO LIBERADO:", data, horario);
+        }
 
         await carregarAgendamentos();
         await carregarHorarios();
 
     } catch (erro) {
-
         console.error("Erro ao cancelar agendamento:", erro);
 
-        alert("Não foi possível cancelar o agendamento. Tente novamente.");
-
+        alert(
+            "Não foi possível cancelar o agendamento. Tente novamente."
+        );
     }
 }
+
 
 
 // =========================================================
